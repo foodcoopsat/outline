@@ -1,0 +1,136 @@
+services:
+  redis:
+    image: redis
+    user: "redis:redis"
+  postgres:
+    image: postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: outline
+    user: "postgres:postgres"
+  outline:
+    build:
+      context: .
+      target: dev
+    # command: yarn start -- --no-migrate
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./dev_config/secrets:/run/secrets
+      - ./dev_data/storage:/data
+      - ./dev_config/database.json:/opt/outline/server/config/database.json
+      - ./vite.config.ts:/opt/outline/vite.config.ts
+      - ./app/:/opt/outline/app
+      - ./server/:/opt/outline/server
+      - ./plugins/:/opt/outline/plugins
+    environment:
+      SECRET_KEY: ffbb7ce7fc45fa40348f132744559a6bf59a5d1209b74bdc7d0671b5b2f54572
+      UTILS_SECRET: 2e910dd07a2549e734993fa5b4e9ddd192748c9817f7ca98892ce9770f48bae
+      LOG_LEVEL: "debug"
+      DATABASE_URL: "postgres://user:pass@postgres:5432/outline?sslmode=disable"
+      DATABASE_CONNECTION_POOL_MIN: "5"
+      DATABASE_CONNECTION_POOL_MAX: "12"
+      PGSSLMODE: "disable"
+      REDIS_URL: "redis://redis:6379"
+      URL: "https://app.local.at"
+      # URL: "https://localhost:3000"
+      PORT: "3000"
+      FORCE_HTTPS: "true"
+      DEBUG: "cache,presenters,events,emails,services,logistics,utils,mailer,accountprovisioner"
+      ENABLE_UPDATES: "true"
+      COLLABORATION_URL: ""
+      # Specify what storage system to use. Possible value is one of "s3" or "local".
+      # For "local", the avatar images and document attachments will be saved on local disk. 
+      FILE_STORAGE: local
+      # If "local" is configured for FILE_STORAGE above, then this sets the parent directory under
+      # which all attachments/images go. Make sure that the process has permissions to create
+      # this path and also to write files to it.
+      FILE_STORAGE_LOCAL_ROOT_DIR: /data
+      # Maximum allowed size for the uploaded attachment.
+      FILE_STORAGE_UPLOAD_MAX_SIZE: "262144000"
+      FILE_STORAGE_IMPORT_MAX_SIZE: "5120000"
+      OIDC_CLIENT_ID: "outline"
+      OIDC_BASE_DOMAIN: "app.local.at"
+      OIDC_CLIENT_SECRET: LyzLTpQ7BX5FWMycHkPY
+      OIDC_AUTH_URI: "https://tools.foodcoops.at/oauth2/auth"
+      OIDC_TOKEN_URI: "https://tools.foodcoops.at/oauth2/token"
+      OIDC_USERINFO_URI: "https://tools.foodcoops.at/oauth2/userinfo"
+      OIDC_USERNAME_CLAIM: "preferred_username"
+      OIDC_DISPLAY_NAME: "Discourse"
+      OIDC_SCOPES: "openid profile email"
+      WEB_CONCURRENCY: "4"
+      SMTP_HOST: "mailcatcher"
+      SMTP_PORT: "25"
+      SMTP_FROM_EMAIL: "wiki@foodcoops.at"
+      SMTP_SECURE: "false"
+      SMTP_REPLY_EMAIL: "wiki@foodcoops.at"
+      SMTP_TLS_CIPHERS: ""
+      DEFAULT_LANGUAGE: "de_DE"
+      BASE_DOMAIN: "app.local.at"
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.outline.entrypoints: https
+      traefik.http.routers.outline.rule: ( Host(`app.local.at`) || HostRegexp(`^[^.]+.app.local.at`) ) && PathPrefix(`/static`)
+      traefik.http.routers.outline.tls: "true"
+      traefik.http.routers.outline.service: "outline"
+      traefik.http.services.outline.loadbalancer.server.port: 3001
+      traefik.http.services.outline.loadbalancer.server.scheme: https
+      traefik.http.routers.outline_api.entrypoints: https
+      traefik.http.routers.outline_api.rule: Host(`app.local.at`) || HostRegexp(`^[^.]+.app.local.at`)
+      traefik.http.routers.outline_api.tls: "true"
+      traefik.http.routers.outline_api.service: "outline_api"
+      traefik.http.services.outline_api.loadbalancer.server.port: 3000
+      traefik.http.services.outline_api.loadbalancer.server.scheme: https
+  mailcatcher:
+    image: tophfr/mailcatcher
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.mailcatcher.entrypoints: https
+      traefik.http.routers.mailcatcher.rule: Host(`mailcatcher.local.at`)
+      traefik.http.routers.mailcatcher.tls: "true"
+      traefik.http.services.mailcatcher.loadbalancer.server.port: 80
+
+  traefik:
+    image: traefik:v3.2.0
+    command:
+      - --accesslog.fields.headers.names.Referer=keep
+      - --accesslog.fields.headers.names.User-Agent=keep
+      - --accesslog.filePath=/accesslog/access.log
+      - --accesslog.format=json
+      - --accesslog=true
+      - --configFile=/etc/traefik/traefik.yaml
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.api.entrypoints: https
+      traefik.http.routers.api.rule: Host(`traefik.local.at`)
+      traefik.http.routers.api.service: api@internal
+      traefik.http.routers.api.tls: "true"
+    ports:
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: host
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
+    volumes:
+      - accesslog:/accesslog
+      - /var/run/docker.sock:/var/run/docker.sock
+      - "./dev_data/certs/:/etc/certs:ro"
+      - "./dev_config/traefik.yaml:/etc/traefik/traefik.yaml:ro"
+      - "./dev_config/traefik.d:/etc/traefik/conf.d:ro"
+  mkcert:
+    image: vishnunair/docker-mkcert
+    environment:
+      - domain=app.local.at,traefik.local.at,*.local.at
+    volumes:
+      - ./dev_data/certs/:/root/.local/share/mkcert
+    labels:
+      - "traefik.enable=false"
+
+volumes:
+  accesslog:
+

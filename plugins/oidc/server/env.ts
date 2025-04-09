@@ -23,6 +23,10 @@ class OIDCPluginEnvironment extends Environment {
     environment.OIDC_CLIENT_SECRET
   );
 
+  @MaxLength(50)
+  public OIDC_BASE_DOMAIN =
+    environment.OIDC_BASE_DOMAIN ?? "Base Domain to use for new teams";
+
   /**
    * The name of the OIDC provider, eg "GitLab" – this will be displayed on the
    * sign-in button and other places in the UI. The default value is:

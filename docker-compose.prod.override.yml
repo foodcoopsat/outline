@@ -1,0 +1,25 @@
+services:
+  outline:
+    build:
+      context: .
+      target: runner
+    # command: yarn dev:watch
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./dev_config/secrets:/run/secrets
+      - ./dev_data/storage:/data
+      - ./dev_config/database.json:/opt/outline/server/config/database.json
+    healthcheck:
+      test: 'wget -qO- "http://localhost:${PORT:-3000}/_health" | grep -q "OK"'
+      start_period: 1s
+      interval: 10s
+      timeout: 5s
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.outline.entrypoints: https
+      traefik.http.routers.outline.rule: Host(`app.local.at`)
+      traefik.http.routers.outline.tls: "true"
+      traefik.http.services.outline.loadbalancer.server.port: 3000
+      traefik.http.services.outline.loadbalancer.server.scheme: http

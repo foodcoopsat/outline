@@ -69,7 +69,7 @@ async function teamCreator({
   );
 
   const availableSubdomain = await findAvailableSubdomain(team, subdomain);
-  await team.update({ subdomain: availableSubdomain }, { transaction });
+  await team.update({ subdomain: availableSubdomain, domain }, { transaction });
 
   return team;
 }

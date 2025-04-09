@@ -23,6 +23,7 @@ allow(User, "share", Team, (actor, team) =>
 allow(User, "createTeam", Team, (actor, team) =>
   and(
     //
+    false,
     isCloudHosted(),
     !actor.isGuest,
     !actor.isViewer,

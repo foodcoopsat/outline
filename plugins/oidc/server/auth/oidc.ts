@@ -49,7 +49,17 @@ async function ensureIgTeam(config_id, ip) {
   const domain = `${subdomain}.${base_domain}`;
   let igteam = await Team.findOne({
     where: { domain },
+    include: [
+      {
+        model: AuthenticationProvider,
+        as: "authenticationProviders",
+        required: false,
+      },
+    ],
   });
+
+  let authProvider;
+
   if (!igteam) {
     Logger.debug("oidc provisioneer", `creating ig team`);
 
@@ -70,14 +80,26 @@ async function ensureIgTeam(config_id, ip) {
         authenticationProvider: authenticationProviderParams,
         ip,
       });
-      Logger.debug("oidc provisioneer", "created team", result);
+      Logger.debug(
+        "oidc provisioneer",
+        `created team with id ${result.team.id}`
+      );
       igteam = result.team;
+      authProvider = result.authenticationProvider;
     } catch (err) {
       Logger.error("oidc provisioneer", "Failed creating team with", err);
     }
-    Logger.debug("oidc provisioneer", `created ig team`, igteam);
+  } else {
+    // Team exists, get its authentication provider
+    authProvider = await AuthenticationProvider.findOne({
+      where: {
+        teamId: igteam.id,
+        name: config_id,
+      },
+    });
   }
-  return igteam;
+
+  return { team: igteam, authenticationProvider: authProvider };
 }
 
 if (
@@ -139,32 +161,23 @@ if (
               `An email field was not returned in the profile parameter, but is required.`
             );
           }
+          if (!profile.groups || !Array.isArray(profile.groups)) {
+            throw AuthenticationError(
+              `Groups were not returned in the profile, but are required for foodcoops authentication.`
+            );
+          }
+
           const groups = profile.groups.filter((group) =>
             group.startsWith("fc_")
           );
-          const team_name = groups[0].split("_", 2)[1];
-          const client = getClientFromContext(ctx);
-          const domain = `${team_name}.${base_domain}`;
-          const subdomain = team_name;
 
-          if (!domain) {
-            throw OIDCMalformedUserInfoError();
+          if (groups.length === 0) {
+            throw AuthenticationError(
+              `User does not belong to any foodcoop group (fc_*).`
+            );
           }
 
-          const team = await Team.findOne({ where: { domain } });
-
-          // Only a single OIDC provider is supported – find the existing, if any.
-          const authenticationProvider = team
-            ? await AuthenticationProvider.findOne({
-                where: {
-                  name: "oidc",
-                  teamId: team.id,
-                  providerId: domain,
-                },
-              })
-            : undefined;
-
-          const providerId = authenticationProvider?.providerId ?? domain;
+          const client = getClientFromContext(ctx);
 
           // Claim name can be overriden using an env variable.
           // Default is 'preferred_username' as per OIDC spec.
@@ -178,98 +191,171 @@ if (
             );
           }
 
-          let result = await accountProvisioner({
-            ip: ctx.ip,
-            team: {
-              teamId: team?.id,
-              // https://github.com/outline/outline/pull/2388#discussion_r681120224
-              name: `Wiki ${team_name}`,
-              domain,
-              subdomain,
-            },
-            user: {
-              name,
-              email: profile.email,
-              avatarUrl: profile.picture,
-            },
-            authenticationProvider: {
-              name: config.id,
-              providerId,
-            },
-            authentication: {
-              providerId: profileId,
-              accessToken,
-              refreshToken,
-              expiresIn: params.expires_in,
-              scopes,
-            },
-          });
+          // Helper function to provision a team and user for a foodcoop group
+          const provisionTeamAndUser = async (team_name: string) => {
+            const domain = `${team_name}.${base_domain}`;
+            const subdomain = team_name;
 
-          Logger.debug("oidc provisioneer", `user with ${result}`, result);
+            if (!domain) {
+              throw OIDCMalformedUserInfoError();
+            }
 
-          const igteam = await ensureIgTeam(config.id, ctx.ip);
+            const team = await Team.findOne({ where: { domain } });
+
+            // Only a single OIDC provider is supported – find the existing, if any.
+            const authenticationProvider = team
+              ? await AuthenticationProvider.findOne({
+                  where: {
+                    name: "oidc",
+                    teamId: team.id,
+                    providerId: domain,
+                  },
+                })
+              : undefined;
+
+            const providerId = authenticationProvider?.providerId ?? domain;
+
+            const result = await accountProvisioner({
+              ip: ctx.ip,
+              team: {
+                teamId: team?.id,
+                // https://github.com/outline/outline/pull/2388#discussion_r681120224
+                name: `Wiki ${team_name}`,
+                domain,
+                subdomain,
+              },
+              user: {
+                name,
+                email: profile.email,
+                avatarUrl: profile.picture,
+              },
+              authenticationProvider: {
+                name: config.id,
+                providerId,
+              },
+              authentication: {
+                providerId: profileId,
+                accessToken,
+                refreshToken,
+                expiresIn: params.expires_in,
+                scopes,
+              },
+            });
+
+            Logger.debug(
+              "oidc provisioneer",
+              `provisioned user ${result.user.id} for team ${team_name}`
+            );
+            return result;
+          };
+
+          // Provision teams and users for all fc_ groups the user belongs to
+          // This ensures the user can access all their foodcoop wikis
+          const teamResults = await Promise.all(
+            groups.map(async (group) => {
+              const team_name = group.split("_", 2)[1];
+              return provisionTeamAndUser(team_name);
+            })
+          );
+
+          // Use the first team as the primary/default result
+          let result = teamResults[0];
+          Logger.debug(
+            "oidc provisioneer",
+            `provisioned ${teamResults.length} teams, primary team: ${result.team.domain}`
+          );
+
+          // Also ensure the user exists in the IG (inter-group) team
+          const { team: igteam, authenticationProvider: igAuthProvider } =
+            await ensureIgTeam(config.id, ctx.ip);
+
+          if (!igteam || !igAuthProvider) {
+            throw AuthenticationError(
+              `Failed to ensure IG team and authentication provider.`
+            );
+          }
 
           let iguser = await User.findOne({
             where: { teamId: igteam.id, name },
           });
           Logger.debug("oidc provisioneer", `iguser is: ${iguser}`);
 
-          const igresult = {
-            user: iguser,
-            team: igteam,
-            isNewUser: false,
-            isNewTeam: false,
-          };
+          let isNewIgUser = false;
+
           if (!iguser) {
             Logger.debug("oidc provisioneer", `creating new iguser`);
-            const userParams = {
+            const userProvisionerResult = await userProvisioner({
               name,
               email: profile.email,
+              role:
+                profile.groups && profile.groups.includes("Administratoren")
+                  ? UserRole.Admin
+                  : undefined,
               avatarUrl: profile.picture,
-            };
-            iguser = await userProvisioner({
-              name: userParams.name,
-              email: userParams.email,
-              language: userParams.language,
-              role: profile.groups.includes("Administratoren")
-                ? UserRole.Admin
-                : undefined,
-              avatarUrl: userParams.avatarUrl,
               teamId: igteam.id,
               ip: ctx.ip,
               authentication: {
-                authenticationProviderId: authenticationProvider.id,
+                authenticationProviderId: igAuthProvider.id,
                 providerId: profileId,
                 accessToken,
                 refreshToken,
                 scopes,
-                expiresAt: params.expiresIn
-                  ? new Date(Date.now() + params.expiresIn * 1000)
+                expiresAt: params.expires_in
+                  ? new Date(Date.now() + params.expires_in * 1000)
                   : undefined,
               },
             });
-            igresult.isNewUser = true;
-            igresult.user = result.user;
+            iguser = userProvisionerResult.user;
+            isNewIgUser = true;
 
             Logger.debug(
               "oidc provisioneer",
-              `created iguser with ${igresult}`,
-              igresult
+              `created iguser with id ${iguser.id}`
             );
           }
+
+          // Create igresult after we're sure iguser exists
+          const igresult = {
+            user: iguser!,
+            team: igteam,
+            isNewUser: isNewIgUser,
+            isNewTeam: false,
+          };
+
+          // Check if a specific team was requested via state
           const state = ctx.cookies.get("state");
           Logger.debug("oidc provisioneer", `cookies state ${state}`, state);
-          const wanted = state.split("|")[0];
-          Logger.debug("oidc provisioneer", `wanted state ${wanted}`);
-          if (wanted === igteam.domain) {
-            Logger.debug(
-              "oidc provisioneer",
-              `switch to iguser: ${iguser}`,
-              iguser
-            );
-            result = igresult;
+
+          if (state) {
+            const wanted = state.split("|")[0];
+            Logger.debug("oidc provisioneer", `wanted state ${wanted}`);
+
+            // Check if IG team was requested
+            if (wanted === igteam.domain) {
+              Logger.debug(
+                "oidc provisioneer",
+                `switch to iguser: ${iguser.id}`
+              );
+              result = igresult;
+            } else {
+              // Check if one of the foodcoop teams was requested
+              const matchingResult = teamResults.find(
+                (r) => r.team.domain === wanted
+              );
+              if (matchingResult) {
+                Logger.debug(
+                  "oidc provisioneer",
+                  `switching to requested team: ${wanted}`
+                );
+                result = matchingResult;
+              }
+            }
           }
-          Logger.debug("oidc provisioneer", `result is: ${result}`, result);
+
+          Logger.debug(
+            "oidc provisioneer",
+            `final result team: ${result.team.domain}, user: ${result.user.id}`
+          );
           return done(null, result.user, { ...result, client });
         } catch (err) {
           return done(err, null);

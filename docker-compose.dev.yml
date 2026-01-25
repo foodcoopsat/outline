@@ -93,7 +93,7 @@ services:
       traefik.http.services.mailcatcher.loadbalancer.server.port: 80
 
   traefik:
-    image: traefik:v3.2.0
+    image: traefik:v3.6
     command:
       - --accesslog.fields.headers.names.Referer=keep
       - --accesslog.fields.headers.names.User-Agent=keep
@@ -122,14 +122,6 @@ services:
       - "./dev_data/certs/:/etc/certs:ro"
       - "./dev_config/traefik.yaml:/etc/traefik/traefik.yaml:ro"
       - "./dev_config/traefik.d:/etc/traefik/conf.d:ro"
-  mkcert:
-    image: vishnunair/docker-mkcert
-    environment:
-      - domain=app.local.at,traefik.local.at,*.local.at
-    volumes:
-      - ./dev_data/certs/:/root/.local/share/mkcert
-    labels:
-      - "traefik.enable=false"
 
 volumes:
   accesslog:

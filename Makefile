@@ -25,4 +25,7 @@ destroy:
 	docker compose stop
 	docker compose rm -f
 
+devcerts:
+	mkcert -cert-file dev_data/certs/app.local.at+2.pem -key-file dev_data/certs/app.local.at+2-key.pem app.local.at traefik.local.at '*.local.at' '*.app.local.at'
+
 .PHONY: up build destroy test watch # let's go to reserve rules names
